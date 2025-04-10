@@ -27,6 +27,38 @@ Le performance vengono valutate usando:
 - Precisione e Recall
 - Accuratezza
 
+## Impostazione del progetto
+lgg-segmentation-project/
+│
+├── data/
+│   ├── raw/               # Dati originali (cartelle TCGA_*)
+│   ├── processed/         # Dati preprocessati
+│   └── splits/           # Train/val/test splits
+│
+├── models/
+│   ├── unet.py           # Implementazione UNet base
+│   ├── unet_plusplus.py  # Implementazione UNet++
+│   └── attention_unet.py # Implementazione Attention UNet
+│
+├── notebooks/
+│   ├── 01_eda.ipynb      # Analisi esplorativa
+│   ├── 02_preprocessing.ipynb  # Preprocessing
+│   └── 03_model_comparison.ipynb  # Confronto modelli
+│
+├── scripts/
+│   ├── preprocess.py     # Script di preprocessing
+│   ├── train.py         # Script di training
+│   └── evaluate.py      # Script di valutazione
+│
+├── configs/
+│   ├── base.yaml        # Configurazioni comuni
+│   ├── unet.yaml        # Configurazioni UNet
+│   └── ...             # Altre configurazioni
+│
+├── requirements.txt    # Dipendenze
+├── README.md           # Documentazione progetto
+└── .gitignore
+
 ## Getting Started
 
 ### Prerequisiti
