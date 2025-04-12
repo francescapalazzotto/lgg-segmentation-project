@@ -12,6 +12,7 @@ jupyter==1.0.0
 monai==1.2.0
 torch==2.0.1
 torchvision==0.15.2
+segmentation_models_pytorch
 
 # Image processing
 opencv-python==4.7.0.72
