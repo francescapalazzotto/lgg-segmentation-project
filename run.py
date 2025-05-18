@@ -105,7 +105,16 @@ def evaluate_model(
 def main():
     # Definizione dei parametri
     data_root = './data/lgg-mari-segmentation' # Da modificare
+    print(f"Data root: {data_root}")
     image_folders = glob.glob(os.path.join(data_root, 'TCGA*'))
+    print(f"Image folders found: {image_folders}")
+    for folder in image_folders:
+        patient_id = os.path.basename(folder)
+        img_files = glob.glob(os.path.join(folder, f'TCGA*_{patient_id}_*.tif'))
+        mask_files = glob.glob(os.path.join(folder, f'TCGA*_{patient_id}_*_mask.tif'))
+        print(f"Folder: {folder}, Image files: {img_files}, Mask files: {mask_files}")
+        image_paths.extend(img_files)
+        mask_paths.extend(mask_files)
     train_ratio = 0.8
     batch_size = 16
     learning_rate = 0.001
@@ -129,7 +138,11 @@ def main():
     })
     # Potrebbe essere utile estrarre l'ID del paziente e unirlo con data.csv per analisi future
 
-    train_df, val_df = train_test_split(data, test_size=1-train_ratio, random_state=42)
+    train_df, val_df = train_test_split(
+        data, 
+        test_size=1-train_ratio, 
+        random_state=42,
+    )
 
     # Definizione delle trasformazioni
     transform = transforms.Compose([
