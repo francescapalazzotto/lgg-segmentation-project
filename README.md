@@ -9,6 +9,7 @@ Questo progetto implementa e confronta diverse architetture di reti neurali per 
 Il dataset contiene immagini MRI cerebrali con maschere di segmentazione manuale delle anomalie FLAIR. I dati provengono da The Cancer Imaging Archive (TCIA) e corrispondono a 110 pazienti del TCGA lower-grade glioma collection.
 
 Struttura dei dati:
+
 - Immagini in formato `.tif` a 3 canali
 - Maschere binarie a 1 canale
 - Dati clinici e genomici in `data.csv`
@@ -22,12 +23,14 @@ Struttura dei dati:
 ## Metriche di Valutazione
 
 Le performance vengono valutate usando:
+
 - Dice Coefficient (F1 score)
 - Intersection over Union (IoU)
 - Precisione e Recall
 - Accuratezza
 
 ## Impostazione del progetto
+
 lgg-segmentation-project/
 │
 ├── data/
@@ -73,6 +76,7 @@ lgg-segmentation-project/
 ### Installazione
 
 1. Clonare la repository:
+
    ```bash
    git clone https://github.com/yourusername/lgg-segmentation-project.git
    cd lgg-segmentation-project
