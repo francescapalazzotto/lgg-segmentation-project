@@ -1,5 +1,6 @@
 import os
 import glob
+import sys
 import pandas as pd
 import numpy as np
 from PIL import Image
@@ -11,16 +12,16 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from tqdm import tqdm
 import segmentation_models_pytorch as smp
-from monai.metrics import DiceMetric, MeanIoU
-from monai.transforms import AsDiscrete
+import json
+import matplotlib.pyplot as plt
 
-# Definizione del Dataset personalizzato per le immagini MRI
+# Dataset personalizzato per le immagini MRI e le maschere
 class MRIDataset(Dataset):
     def __init__(self, img_dir, mask_dir, transform=None):
         self.img_dir = img_dir
         self.mask_dir = mask_dir
-        self.img_paths = sorted(glob.glob(os.path.join(img_dir, '*.tif')))
-        self.mask_paths = sorted(glob.glob(os.path.join(mask_dir, '*_mask.tif')))
+        self.img_paths = []
+        self.mask_paths = []
         self.transform = transform
 
     def __len__(self):
@@ -29,241 +30,255 @@ class MRIDataset(Dataset):
     def __getitem__(self, idx):
         img_path = self.img_paths[idx]
         mask_path = self.mask_paths[idx]
+        
+        # Carica immagine e maschera
         image = Image.open(img_path).convert('RGB')
-        mask = Image.open(mask_path).convert('L')  # Convert to grayscale (1 channel)
-        mask = np.array(mask) / 255.0  # Normalize mask to [0, 1]
-        mask = torch.from_numpy(mask).float().unsqueeze(0) # Add channel dimension
+        mask = Image.open(mask_path).convert('L') # Converti in scala di grigi (L)
+
+        # Normalizza la maschera a 0 e 1 e aggiungi una dimensione per il canale
+        mask = np.array(mask) / 255.0
+        mask = torch.from_numpy(mask).float().unsqueeze(0) # [1, H, W]
 
         if self.transform:
             image = self.transform(image)
-            # Potrebbe essere necessario applicare trasformazioni separate alla maschera
-            mask = transforms.functional.resize(mask, image.shape[2:]) # Resize mask to image size
+            # Ridimensiona la maschera alla stessa dimensione dell'immagine, usando interpolazione NEAREST
+            mask = transforms.functional.resize(mask, image.shape[1:], interpolation=transforms.functional.InterpolationMode.NEAREST)
 
         return image, mask
 
-# Funzione per l'allenamento del modello
-def train_model(
-    model, 
-    dataloader, 
-    criterion, 
-    optimizer, 
-    device,
-):
+# Funzione per l'addestramento del modello
+def train_model(model, dataloader, criterion, optimizer, device):
     model.train()
     epoch_loss = 0
-    for images, masks in tqdm(dataloader):
+    for images, masks in tqdm(dataloader, desc="Training"):
         images = images.to(device)
         masks = masks.to(device)
+        
         optimizer.zero_grad()
         outputs = model(images)
-        loss = criterion(outputs, masks)
+        loss = criterion(outputs, masks) # BCEWithLogitsLoss gestisce i logits
         loss.backward()
         optimizer.step()
+        
         epoch_loss += loss.item()
     return epoch_loss / len(dataloader)
 
-# Funzione per la valutazione del modello
-def evaluate_model(
-    model, 
-    dataloader, 
-    criterion, 
-    device, 
-    dice_metric, 
-    iou_metric, 
-    post_pred, 
-    post_label,
-):
+# Funzione per la valutazione del modello con calcolo manuale di Dice e IoU
+def evaluate_model(model, dataloader, criterion, device): 
     model.eval()
     epoch_loss = 0
+    total_dice = 0
+    total_iou = 0
+    num_batches = 0
+
     with torch.no_grad():
-        for images, masks in tqdm(dataloader):
+        for images, masks in tqdm(dataloader, desc="Evaluating"):
             images = images.to(device)
-            masks = masks.to(device)
+            masks = masks.to(device) # Maschera originale [B, 1, H, W] con valori 0.0 o 1.0
+            
             outputs = model(images)
             loss = criterion(outputs, masks)
             epoch_loss += loss.item()
 
-            # Calcolo delle metriche
-            outputs_sigmoid = torch.sigmoid(outputs)
-            dice_metric(
-                y_pred=post_pred(outputs_sigmoid), 
-                y=post_label(masks),
-            )
-            iou_metric(
-                y_pred=post_pred(outputs_sigmoid),
-                y=post_label(masks),
-            )
+            # Previsioni binarie: applica sigmoid e soglia a 0.5
+            preds_binary = (torch.sigmoid(outputs) > 0.5).float() # [B, 1, H, W] con valori 0.0 o 1.0
 
-    mean_dice = dice_metric.aggregate().item()
-    mean_iou = iou_metric.aggregate().item()
-    dice_metric.reset()
-    iou_metric.reset()
+            # Calcolo del Dice Score e IoU per ogni batch
+            intersection = (preds_binary * masks).sum()
+            union = (preds_binary + masks).sum() - intersection 
+
+            # Dice Score (per l'intera batch)
+            epsilon = 1e-6 
+            dice_score_batch = (2. * intersection + epsilon) / (preds_binary.sum() + masks.sum() + epsilon)
+            total_dice += dice_score_batch.item()
+
+            # IoU (per l'intera batch)
+            iou_batch = (intersection + epsilon) / (union + epsilon)
+            total_iou += iou_batch.item()
+            
+            num_batches += 1
+
+    mean_dice = total_dice / num_batches
+    mean_iou = total_iou / num_batches
 
     return epoch_loss / len(dataloader), mean_dice, mean_iou
 
-# Funzione principale per l'esecuzione
 def main():
-    # Definizione dei parametri
-    data_root = './data/lgg-mari-segmentation' # Da modificare
-    print(f"Data root: {data_root}")
-    image_folders = glob.glob(os.path.join(data_root, 'TCGA*'))
-    print(f"Image folders found: {image_folders}")
-    for folder in image_folders:
-        patient_id = os.path.basename(folder)
-        img_files = glob.glob(os.path.join(folder, f'TCGA*_{patient_id}_*.tif'))
-        mask_files = glob.glob(os.path.join(folder, f'TCGA*_{patient_id}_*_mask.tif'))
-        print(f"Folder: {folder}, Image files: {img_files}, Mask files: {mask_files}")
-        image_paths.extend(img_files)
-        mask_paths.extend(mask_files)
+    # Parametri di configurazione
+    data_root = './data/lgg-mri-segmentation'
     train_ratio = 0.8
-    batch_size = 16
+    batch_size = 4
     learning_rate = 0.001
     num_epochs = 10
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Preparazione dei dati
+    print(f"Data root: {data_root}")
+
+    # Raccolta dei percorsi delle immagini e delle maschere
     image_paths = []
     mask_paths = []
+    image_folders = glob.glob(os.path.join(data_root, 'TCGA*'))
+    print(f"Image folders found: {len(image_folders)}")
+
     for folder in image_folders:
-        patient_id = os.path.basename(folder)
-        img_files = glob.glob(os.path.join(folder, f'TCGA*_{patient_id}_*.tif'))
-        mask_files = glob.glob(os.path.join(folder, f'TCGA*_{patient_id}_*_mask.tif'))
-        image_paths.extend(img_files)
-        mask_paths.extend(mask_files)
+        all_tif_files = glob.glob(os.path.join(folder, '*.tif'))
+        current_images = sorted([f for f in all_tif_files if '_mask.tif' not in f])
+        current_masks = sorted([f for f in all_tif_files if '_mask.tif' in f])
 
-    # Assicurati che ci sia una corrispondenza tra immagini e maschere
-    data = pd.DataFrame({
-        'image_path': image_paths,
-        'mask_path': mask_paths,
-    })
-    # Potrebbe essere utile estrarre l'ID del paziente e unirlo con data.csv per analisi future
+        for img_path in current_images:
+            base_name = os.path.basename(img_path)
+            mask_base_name = base_name.replace('.tif', '_mask.tif')
+            expected_mask_path = os.path.join(folder, mask_base_name)
 
-    train_df, val_df = train_test_split(
-        data, 
-        test_size=1-train_ratio, 
-        random_state=42,
-    )
+            if expected_mask_path in current_masks:
+                image_paths.append(img_path)
+                mask_paths.append(expected_mask_path)
 
-    # Definizione delle trasformazioni
+    if len(image_paths) != len(mask_paths):
+        print("Error: Mismatch in number of images and masks collected!")
+        sys.exit(1)
+    else:
+        print(f"\nSuccessfully collected {len(image_paths)} image-mask pairs.")
+
+    # Creazione del DataFrame e split train/validation
+    data = pd.DataFrame({'image_path': image_paths, 'mask_path': mask_paths})
+    print(f"DataFrame head:\n{data.head()}")
+    print(f"Total samples in DataFrame: {len(data)}")
+
+    if not data.empty:
+        train_df, val_df = train_test_split(data, test_size=1-train_ratio, random_state=42)
+        print(f"Train samples: {len(train_df)}, Validation samples: {len(val_df)}")
+    else:
+        print("Error: No data found after processing. Check file paths and naming conventions.")
+        sys.exit(1)
+
+    # Definizione delle trasformazioni per le immagini
     transform = transforms.Compose([
-        transforms.Resize((256, 256)), # Ridimensionamento per uniformità
+        transforms.Resize((256, 256)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # Normalizzazione ImageNet
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
-    # Creazione dei Dataset e DataLoader
+    # Inizializzazione dei dataset e dataloader
     train_dataset = MRIDataset(img_dir='', mask_dir='', transform=transform)
     val_dataset = MRIDataset(img_dir='', mask_dir='', transform=transform)
+
     train_dataset.img_paths = train_df['image_path'].tolist()
     train_dataset.mask_paths = train_df['mask_path'].tolist()
     val_dataset.img_paths = val_df['image_path'].tolist()
     val_dataset.mask_paths = val_df['mask_path'].tolist()
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size)
+    # I dataloader utilizzeranno il nuovo batch_size ridotto
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=os.cpu_count() // 2 or 1)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=os.cpu_count() // 2 or 1)
 
-    # Inizializzazione dei modelli da segmentation_models_pytorch
-    unet_model = smp.Unet(
-        encoder_name="resnet34", 
-        encoder_weights="imagenet", 
-        in_channels=3, 
-        classes=1,
-    ).to(device)
-    attention_unet_model = smp.Unet(
-        encoder_name="resnet34", 
-        encoder_weights="imagenet", 
-        in_channels=3, 
-        classes=1, 
-        decoder_attention_type='scse',
-    ).to(device) # Esempio di Attention U-Net
-    unet_plusplus_model = smp.UnetPlusPlus(
-        encoder_name="resnet34", 
-        encoder_weights="imagenet", 
-        in_channels=3, 
-        classes=1,
-    ).to(device)
+    # Definizione dei modelli
+    models_to_train = {
+        "U-Net": smp.Unet(
+            encoder_name="resnet34",
+            encoder_weights="imagenet",
+            in_channels=3,
+            classes=1, # 1 canale per la segmentazione binaria (foreground)
+        ).to(device),
+        "Attention U-Net": smp.Unet(
+            encoder_name="resnet34",
+            encoder_weights="imagenet",
+            in_channels=3,
+            classes=1,
+            decoder_attention_type='scse',
+        ).to(device),
+        "LinkNet": smp.Linknet(
+            encoder_name="resnet34",
+            encoder_weights="imagenet",
+            in_channels=3,
+            classes=1,
+        ).to(device)
+    }
 
-    # Definizione della funzione di loss e degli ottimizzatori
-    criterion = nn.BCEWithLogitsLoss() # Binary Cross-Entropy with Sigmoid
-    optimizer_unet = optim.Adam(unet_model.parameters(), lr=learning_rate)
-    optimizer_att_unet = optim.Adam(attention_unet_model.parameters(), lr=learning_rate)
-    optimizer_unet_plusplus = optim.Adam(unet_plusplus_model.parameters(), lr=learning_rate)
+    # Funzione di loss: Binary Cross-Entropy con Logits
+    criterion = nn.BCEWithLogitsLoss()
 
-    # Definizione delle metriche MONAI
-    dice_metric = DiceMetric(include_background=True, reduction="mean")
-    iou_metric = MeanIoU(include_background=True, reduction="mean")
-    post_pred = AsDiscrete(threshold=0.5)
-    post_label = AsDiscrete(to_onehot=1)
+    # Preparazione per il logging e il salvataggio dei risultati
+    training_logs = {}
+    output_dir = 'training_results'
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Ciclo di training e valutazione per U-Net
-    print("Training U-Net...")
-    for epoch in range(num_epochs):
-        train_loss = train_model(
-            unet_model, 
-            train_loader, 
-            criterion, 
-            optimizer_unet, 
-            device,
-        )
-        val_loss, val_dice, val_iou = evaluate_model(
-            unet_model, 
-            val_loader, 
-            criterion, 
-            device, 
-            dice_metric, 
-            iou_metric, 
-            post_pred, 
-            post_label,
-        )
-        print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Dice: {val_dice:.4f}, Val IoU: {val_iou:.4f}")
+    # Ciclo di addestramento per ogni modello
+    for model_name, model in models_to_train.items():
+        print(f"\nTraining {model_name}...")
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    # Ciclo di training e valutazione per Attention U-Net
-    print("\nTraining Attention U-Net...")
-    for epoch in range(num_epochs):
-        train_loss = train_model(
-            attention_unet_model, 
-            train_loader, 
-            criterion, 
-            optimizer_att_unet, 
-            device,
-        )
-        val_loss, val_dice, val_iou = evaluate_model(
-            attention_unet_model, 
-            val_loader, 
-            criterion, 
-            device, 
-            dice_metric, 
-            iou_metric, 
-            post_pred, 
-            post_label,
-        )
-        print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Dice: {val_dice:.4f}, Val IoU: {val_iou:.4f}")
+        train_losses = []
+        val_losses = []
+        val_dices = []
+        val_ious = []
+        best_val_dice = -1.0
 
-    # Ciclo di training e valutazione per U-Net++
-    print("\nTraining U-Net++...")
-    for epoch in range(num_epochs):
-        train_loss = train_model(
-            unet_plusplus_model, 
-            train_loader, 
-            criterion, 
-            optimizer_unet_plusplus, 
-            device, 
-            dice_metric, 
-            iou_metric, 
-            post_pred, 
-            post_label,
-        )
-        val_loss, val_dice, val_iou = evaluate_model(
-            unet_plusplus_model, 
-            val_loader, 
-            criterion, 
-            device, 
-            dice_metric, 
-            iou_metric, 
-            post_pred, 
-            post_label,
-        )
-        print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Dice: {val_dice:.4f}, Val IoU: {val_iou:.4f}")
+        for epoch in range(num_epochs):
+            train_loss = train_model(model, train_loader, criterion, optimizer, device)
+            val_loss, val_dice, val_iou = evaluate_model(model, val_loader, criterion, device) 
+
+            train_losses.append(train_loss)
+            val_losses.append(val_loss)
+            val_dices.append(val_dice)
+            val_ious.append(val_iou)
+
+            print(f"Epoch {epoch+1}/{num_epochs} - {model_name}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Dice: {val_dice:.4f}, Val IoU: {val_iou:.4f}")
+
+            # Salvataggio del modello migliore in base al Dice Score di validazione
+            if val_dice > best_val_dice:
+                best_val_dice = val_dice
+                model_save_path = os.path.join(output_dir, f'{model_name.replace(" ", "_").lower()}_best_model.pth')
+                torch.save(model.state_dict(), model_save_path)
+                print(f"Saved best {model_name} model to {model_save_path} with Dice: {best_val_dice:.4f}")
+
+        # Registrazione dei log di training per il modello corrente
+        training_logs[model_name] = {
+            'train_loss': train_losses,
+            'val_loss': val_losses,
+            'val_dice': val_dices,
+            'val_iou': val_ious
+        }
+
+        # Generazione e salvataggio dei grafici delle metriche
+        plt.figure(figsize=(12, 5))
+        plt.subplot(1, 2, 1)
+        plt.plot(range(1, num_epochs + 1), train_losses, label='Train Loss')
+        plt.plot(range(1, num_epochs + 1), val_losses, label='Validation Loss')
+        plt.title(f'{model_name} Loss over Epochs')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.legend()
+        plt.grid(True)
+
+        plt.subplot(1, 2, 2)
+        plt.plot(range(1, num_epochs + 1), val_dices, label='Validation Dice Score')
+        plt.plot(range(1, num_epochs + 1), val_ious, label='Validation IoU Score')
+        plt.title(f'{model_name} Metrics over Epochs')
+        plt.xlabel('Epoch')
+        plt.ylabel('Score')
+        plt.legend()
+        plt.grid(True)
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'{model_name.replace(" ", "_").lower()}_metrics_plot.png'))
+        plt.close()
+    
+    # Salvataggio del riepilogo dei log in formato JSON
+    log_json_path = os.path.join(output_dir, 'training_summary.json')
+    with open(log_json_path, 'w') as f:
+        json.dump(training_logs, f, indent=4)
+    print(f"\nTraining summary saved to {log_json_path}")
+
+    # Salvataggio dei log dettagliati in formato CSV per ogni modello
+    for model_name, logs in training_logs.items():
+        df_logs = pd.DataFrame(logs)
+        df_logs.index.name = 'Epoch'
+        df_logs.index = df_logs.index + 1 
+        csv_path = os.path.join(output_dir, f'{model_name.replace(" ", "_").lower()}_training_log.csv')
+        df_logs.to_csv(csv_path)
+        print(f"Training log for {model_name} saved to {csv_path}")
+
 
 if __name__ == '__main__':
     main()
