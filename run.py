@@ -3,17 +3,17 @@ import glob
 import sys
 import pandas as pd
 import numpy as np
-from PIL import Image
-from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
-from tqdm import tqdm
 import segmentation_models_pytorch as smp
 import json
 import matplotlib.pyplot as plt
+from PIL import Image
+from sklearn.model_selection import train_test_split
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+from tqdm import tqdm
 
 # Dataset personalizzato per le immagini MRI e le maschere
 class MRIDataset(Dataset):
@@ -42,12 +42,22 @@ class MRIDataset(Dataset):
         if self.transform:
             image = self.transform(image)
             # Ridimensiona la maschera alla stessa dimensione dell'immagine, usando interpolazione NEAREST
-            mask = transforms.functional.resize(mask, image.shape[1:], interpolation=transforms.functional.InterpolationMode.NEAREST)
+            mask = transforms.functional.resize(
+                mask, 
+                image.shape[1:], 
+                interpolation=transforms.functional.InterpolationMode.NEAREST,
+            )
 
         return image, mask
 
 # Funzione per l'addestramento del modello
-def train_model(model, dataloader, criterion, optimizer, device):
+def train_model(
+    model, 
+    dataloader, 
+    criterion, 
+    optimizer, 
+    device
+):
     model.train()
     epoch_loss = 0
     for images, masks in tqdm(dataloader, desc="Training"):
@@ -64,7 +74,12 @@ def train_model(model, dataloader, criterion, optimizer, device):
     return epoch_loss / len(dataloader)
 
 # Funzione per la valutazione del modello con calcolo manuale di Dice e IoU
-def evaluate_model(model, dataloader, criterion, device): 
+def evaluate_model(
+    model, 
+    dataloader, 
+    criterion, 
+    device
+): 
     model.eval()
     epoch_loss = 0
     total_dice = 0
@@ -140,6 +155,30 @@ def main():
     else:
         print(f"\nSuccessfully collected {len(image_paths)} image-mask pairs.")
 
+    print("\nPerforming a small data exploration for class imbalance...")
+    sample_size = int(len(mask_paths) * 0.20) # Analizza il 20% delle maschere
+    print(f"Analyzing {sample_size} random masks for class imbalance...") # Aggiungi un messaggio più chiaro    
+    random_indices = np.random.choice(len(mask_paths), size=sample_size, replace=False)
+    
+    total_tumor_pixels = 0
+    total_pixels = 0
+
+    for i in random_indices:
+        mask = Image.open(mask_paths[i]).convert('L')
+        mask_array = np.array(mask)
+        total_tumor_pixels += np.sum(mask_array > 0) # Assumendo che il tumore sia rappresentato da pixel > 0
+        total_pixels += mask_array.size
+
+    if total_pixels > 0:
+        tumor_percentage = (total_tumor_pixels / total_pixels) * 100
+        print(f"Average tumor pixel percentage across {sample_size} random masks: {tumor_percentage:.2f}%")
+        if tumor_percentage < 5: # Un valore soglia per indicare un forte squilibrio
+            print("Note: This dataset shows significant class imbalance (tumor pixels are a small minority).")
+            print("      This is common in medical imaging and loss functions like BCEWithLogitsLoss (which you are using) are robust to it,")
+            print("      but more advanced techniques like Dice Loss or Focal Loss could be considered for future improvements.")
+    else:
+        print("Could not calculate tumor percentage: No pixels found in sample masks.")
+    
     # Creazione del DataFrame e split train/validation
     data = pd.DataFrame({'image_path': image_paths, 'mask_path': mask_paths})
     print(f"DataFrame head:\n{data.head()}")
