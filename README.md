@@ -49,7 +49,7 @@ lgg-segmentation-project/
 │   └── training_summary.json             # Riepilogo dei log
 │
 ├── notebooks/
-│   └── 1-analisi_esplorativa.ipynb # Analisi esplorativa dei dati e confronto dei risultati del training
+│   └── analisi_esplorativa.ipynb # Analisi esplorativa dei dati e confronto dei risultati del training
 │
 ├── run.py                                # Script principale per la preparazione dati, training e salvataggio risultati
 ├── requirements.txt                      # Dipendenze del progetto

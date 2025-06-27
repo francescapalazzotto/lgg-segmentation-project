@@ -42,10 +42,10 @@ class MRIDataset(Dataset):
         if self.transform:
             image = self.transform(image)
             # Ridimensiona la maschera alla stessa dimensione dell'immagine, usando interpolazione NEAREST
-            mask = transforms.functional.resize(
+            mask = transforms.functional.resize( # type: ignore
                 mask, 
                 image.shape[1:], 
-                interpolation=transforms.functional.InterpolationMode.NEAREST,
+                interpolation=transforms.functional.InterpolationMode.NEAREST, # type: ignore
             )
 
         return image, mask
@@ -156,8 +156,8 @@ def main():
         print(f"\nSuccessfully collected {len(image_paths)} image-mask pairs.")
 
     print("\nPerforming a small data exploration for class imbalance...")
-    sample_size = int(len(mask_paths) * 0.20) # Analizza il 20% delle maschere
-    print(f"Analyzing {sample_size} random masks for class imbalance...") # Aggiungi un messaggio più chiaro    
+    sample_size = int(len(mask_paths))
+    print(f"Analyzing {sample_size} random masks for class imbalance...") 
     random_indices = np.random.choice(len(mask_paths), size=sample_size, replace=False)
     
     total_tumor_pixels = 0
@@ -208,8 +208,8 @@ def main():
     val_dataset.mask_paths = val_df['mask_path'].tolist()
 
     # I dataloader utilizzeranno il nuovo batch_size ridotto
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=os.cpu_count() // 2 or 1)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=os.cpu_count() // 2 or 1)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=os.cpu_count() // 2 or 1) # type: ignore
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=os.cpu_count() // 2 or 1) # type: ignore
 
     # Definizione dei modelli
     models_to_train = {
