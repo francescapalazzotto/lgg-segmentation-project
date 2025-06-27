@@ -172,7 +172,7 @@ def main():
     if total_pixels > 0:
         tumor_percentage = (total_tumor_pixels / total_pixels) * 100
         print(f"Average tumor pixel percentage across {sample_size} random masks: {tumor_percentage:.2f}%")
-        if tumor_percentage < 5: # Un valore soglia per indicare un forte squilibrio
+        if tumor_percentage < 5: # Valore soglia per indicare un forte squilibrio
             print("Note: This dataset shows significant class imbalance (tumor pixels are a small minority).")
             print("      This is common in medical imaging and loss functions like BCEWithLogitsLoss (which you are using) are robust to it,")
             print("      but more advanced techniques like Dice Loss or Focal Loss could be considered for future improvements.")
@@ -207,7 +207,6 @@ def main():
     val_dataset.img_paths = val_df['image_path'].tolist()
     val_dataset.mask_paths = val_df['mask_path'].tolist()
 
-    # I dataloader utilizzeranno il nuovo batch_size ridotto
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=os.cpu_count() // 2 or 1) # type: ignore
     val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=os.cpu_count() // 2 or 1) # type: ignore
 
